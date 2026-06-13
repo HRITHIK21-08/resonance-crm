@@ -35,9 +35,10 @@ export default function DashboardPage() {
   const { resolvedTheme } = useTheme();
 
   // Fetch dashboard summary KPIs
-  const { data: overview, isLoading: isOverviewLoading, refetch: refetchOverview } = useQuery<AnalyticsOverview>({
+  const { data: overview, isLoading: isOverviewLoading, isError: isOverviewError, refetch: refetchOverview } = useQuery<AnalyticsOverview>({
     queryKey: ['analytics-overview'],
     queryFn: () => apiGet('/api/analytics/overview'),
+    retry: 3,
   });
 
   // Fetch recent campaigns
@@ -138,7 +139,7 @@ export default function DashboardPage() {
     };
   });
 
-  const hasNoData = !overview || overview.total_customers === 0;
+  const hasNoData = overview?.total_customers === 0;
 
   // Custom hero welcome banner background styles
   const bannerBg = 
@@ -217,7 +218,55 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {hasNoData && !isOverviewLoading && (
+      {/* Connection Waking-up / Error State */}
+      {isOverviewError && (
+        <div className="bg-card border border-destructive/20 rounded-3xl p-12 text-center max-w-xl mx-auto space-y-4 shadow-sm dark:shadow-lg animate-scale-in">
+          <div className="w-16 h-16 rounded-2xl bg-destructive/10 mx-auto flex items-center justify-center border border-destructive/20 shadow-inner">
+            <RefreshCw className="w-8 h-8 text-destructive animate-spin" />
+          </div>
+          <h2 className="text-xl font-bold">Connecting to Marketing Server...</h2>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            The backend server is taking a moment to wake up (Render's free tier instances spin down after 15 mins of inactivity). This can take up to 50 seconds.
+          </p>
+          <Button
+            onClick={() => refetchOverview()}
+            className={cn("text-white rounded-xl px-5 py-2.5 text-xs font-bold mt-2 flex items-center gap-1.5 mx-auto cursor-pointer", activeBrand.buttonClass)}
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Retry Connection
+          </Button>
+        </div>
+      )}
+
+      {/* Loading State */}
+      {isOverviewLoading && !isOverviewError && (
+        <div className="py-16 flex flex-col items-center justify-center gap-3">
+          <div className="w-8 h-8 rounded-full border-4 border-t-transparent animate-spin" style={{ borderColor: `${activeBrand.chartColor}20`, borderTopColor: activeBrand.chartColor }} />
+          <span className="text-xs text-muted-foreground font-medium">Fetching dashboard metrics...</span>
+        </div>
+      )}
+
+      {hasNoData && !isOverviewLoading && !isOverviewError && (
+        <div className="bg-card border border-border rounded-3xl p-12 text-center max-w-xl mx-auto space-y-4 shadow-sm dark:shadow-lg animate-scale-in">
+          <div className="w-16 h-16 rounded-2xl bg-primary/10 mx-auto flex items-center justify-center border border-primary/20 shadow-inner">
+            <Users className="w-8 h-8 text-primary" />
+          </div>
+          <h2 className="text-xl font-bold">No Shopper Data Ingested</h2>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            Resonance CRM needs shopper profiles and historical orders to calculate segment sizes and track campaigns. Click **Sync Database** below to seed 1,000 customers instantly.
+          </p>
+          <Button
+            onClick={handleSeedData}
+            disabled={seeding}
+            className={cn("text-white rounded-xl px-5 py-2.5 text-xs font-bold mt-2 flex items-center gap-1.5 mx-auto cursor-pointer", activeBrand.buttonClass)}
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${seeding ? 'animate-spin' : ''}`} />
+            Sync Database
+          </Button>
+        </div>
+      )}
+
+      {!hasNoData && !isOverviewLoading && !isOverviewError && (
         <div className="bg-card border border-border rounded-3xl p-12 text-center max-w-xl mx-auto space-y-4 shadow-sm dark:shadow-lg animate-scale-in">
           <div className="w-16 h-16 rounded-2xl bg-primary/10 mx-auto flex items-center justify-center border border-primary/20 shadow-inner">
             <Users className="w-8 h-8 text-primary" />
