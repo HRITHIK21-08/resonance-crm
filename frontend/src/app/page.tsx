@@ -265,28 +265,7 @@ export default function DashboardPage() {
           </Button>
         </div>
       )}
-
       {!hasNoData && !isOverviewLoading && !isOverviewError && (
-        <div className="bg-card border border-border rounded-3xl p-12 text-center max-w-xl mx-auto space-y-4 shadow-sm dark:shadow-lg animate-scale-in">
-          <div className="w-16 h-16 rounded-2xl bg-primary/10 mx-auto flex items-center justify-center border border-primary/20 shadow-inner">
-            <Users className="w-8 h-8 text-primary" />
-          </div>
-          <h2 className="text-xl font-bold">No Shopper Data Ingested</h2>
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            Resonance CRM needs shopper profiles and historical orders to calculate segment sizes and track campaigns. Click **Sync Database** below to seed 1,000 customers instantly.
-          </p>
-          <Button
-            onClick={handleSeedData}
-            disabled={seeding}
-            className={cn("text-white rounded-xl px-5 py-2.5 text-xs font-bold mt-2 flex items-center gap-1.5 mx-auto", activeBrand.buttonClass)}
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${seeding ? 'animate-spin' : ''}`} />
-            Sync Database
-          </Button>
-        </div>
-      )}
-
-      {!hasNoData && (
         <>
           {/* Quick Steps Control Launchpad Grid */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5 animate-fade-in-up stagger-1">

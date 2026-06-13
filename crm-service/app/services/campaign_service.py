@@ -17,6 +17,8 @@ When a campaign is launched:
 """
 import logging
 from datetime import datetime, timezone
+import threading
+import uuid
 
 import requests
 
@@ -332,49 +334,63 @@ class CampaignService:
             daemon=True
         ).start()
 
-        # Spawn parallel local simulation threads if channel service was offline
+        # Spawn a single sequential local simulation thread if channel service was offline
         if local_fallback:
             import hashlib
             import random
             import time
 
-            def simulate_single_message(app_context, msg_id):
+            def run_local_simulation(app_context, msg_ids):
+                # Wait 2 seconds to allow the initial launch transaction to commit
+                time.sleep(2)
+                
                 with app_context:
                     from app.services.message_service import MessageService
-                    from app.models.message import Message
-
-                    msg = Message.query.get(msg_id)
-                    if not msg:
-                        return
-
+                    
                     # 1. DELIVERED (95% chance)
-                    if random.random() <= 0.95:
-                        time.sleep(random.uniform(0.5, 1.5))
-                        delivered_key = hashlib.sha256(f"{msg_id}-delivered".encode()).hexdigest()
-                        MessageService.process_delivery_callback({
-                            "message_id": msg_id,
-                            "event_type": "DELIVERED",
-                            "idempotency_key": delivered_key,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "sequence": 1
-                        })
+                    delivered_ids = []
+                    for msg_id in msg_ids:
+                        if random.random() <= 0.95:
+                            delivered_ids.append(msg_id)
+                            delivered_key = hashlib.sha256(f"{msg_id}-delivered".encode()).hexdigest()
+                            try:
+                                MessageService.process_delivery_callback({
+                                    "message_id": msg_id,
+                                    "event_type": "DELIVERED",
+                                    "idempotency_key": delivered_key,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "sequence": 1
+                                })
+                                # Very brief pause to prevent CPU spike and simulate timeline
+                                time.sleep(0.01)
+                            except Exception as e:
+                                logger.error(f"Simulation delivered error for msg {msg_id}: {e}")
 
-                        # 2. READ (75% chance)
+                    # 2. READ (75% chance of delivered)
+                    read_ids = []
+                    for msg_id in delivered_ids:
                         if random.random() <= 0.75:
-                            time.sleep(random.uniform(1.0, 3.0))
+                            read_ids.append(msg_id)
                             read_key = hashlib.sha256(f"{msg_id}-read".encode()).hexdigest()
-                            MessageService.process_delivery_callback({
-                                "message_id": msg_id,
-                                "event_type": "READ",
-                                "idempotency_key": read_key,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                                "sequence": 2
-                            })
+                            try:
+                                MessageService.process_delivery_callback({
+                                    "message_id": msg_id,
+                                    "event_type": "READ",
+                                    "idempotency_key": read_key,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "sequence": 2
+                                })
+                                time.sleep(0.01)
+                            except Exception as e:
+                                logger.error(f"Simulation read error for msg {msg_id}: {e}")
 
-                            # 3. CLICKED (20% chance)
-                            if random.random() <= 0.20:
-                                time.sleep(random.uniform(1.0, 3.0))
-                                clicked_key = hashlib.sha256(f"{msg_id}-clicked".encode()).hexdigest()
+                    # 3. CLICKED (20% chance of read)
+                    clicked_ids = []
+                    for msg_id in read_ids:
+                        if random.random() <= 0.20:
+                            clicked_ids.append(msg_id)
+                            clicked_key = hashlib.sha256(f"{msg_id}-clicked".encode()).hexdigest()
+                            try:
                                 MessageService.process_delivery_callback({
                                     "message_id": msg_id,
                                     "event_type": "CLICKED",
@@ -382,28 +398,25 @@ class CampaignService:
                                     "timestamp": datetime.now(timezone.utc).isoformat(),
                                     "sequence": 3
                                 })
+                                time.sleep(0.01)
+                            except Exception as e:
+                                logger.error(f"Simulation clicked error for msg {msg_id}: {e}")
 
-                                # 4. CONVERTED (15% chance)
-                                if random.random() <= 0.15:
-                                    time.sleep(random.uniform(0.5, 1.5))
-                                    converted_key = hashlib.sha256(f"{msg_id}-converted".encode()).hexdigest()
-                                    MessageService.process_delivery_callback({
-                                        "message_id": msg_id,
-                                        "event_type": "CONVERTED",
-                                        "idempotency_key": converted_key,
-                                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                                        "sequence": 4
-                                    })
-
-            def run_local_simulation(app_context, msg_ids):
-                # Wait 2 seconds to allow the initial launch transaction to commit
-                time.sleep(2)
-                for msg_id in msg_ids:
-                    threading.Thread(
-                        target=simulate_single_message,
-                        args=(app_context, msg_id),
-                        daemon=True
-                    ).start()
+                    # 4. CONVERTED (15% chance of clicked)
+                    for msg_id in clicked_ids:
+                        if random.random() <= 0.15:
+                            converted_key = hashlib.sha256(f"{msg_id}-converted".encode()).hexdigest()
+                            try:
+                                MessageService.process_delivery_callback({
+                                    "message_id": msg_id,
+                                    "event_type": "CONVERTED",
+                                    "idempotency_key": converted_key,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "sequence": 4
+                                })
+                                time.sleep(0.01)
+                            except Exception as e:
+                                logger.error(f"Simulation converted error for msg {msg_id}: {e}")
 
             message_ids = [m.id for m in messages]
             threading.Thread(

@@ -138,7 +138,8 @@ class AnalyticsService:
         Get campaign performance trends over time.
         Returns daily aggregates for the specified period.
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
 
         campaigns = (
             Campaign.query
@@ -147,8 +148,20 @@ class AnalyticsService:
             .all()
         )
 
-        trends = []
+        daily_data = {}
+        for i in range(days + 1):
+            day_str = (cutoff + timedelta(days=i)).strftime("%Y-%m-%d")
+            daily_data[day_str] = {
+                "date": day_str,
+                "sent": 0,
+                "delivered": 0,
+                "read": 0,
+                "clicked": 0,
+            }
+
         for campaign in campaigns:
+            if not campaign.launched_at:
+                continue
             c_brand_id = campaign.ai_metadata.get("brand_id") if campaign.ai_metadata else None
             
             # Map pre-seeded/unassigned campaigns dynamically
@@ -166,18 +179,14 @@ class AnalyticsService:
             if brand_id and c_brand_id != brand_id:
                 continue
 
-            trends.append({
-                "date": campaign.launched_at.strftime("%Y-%m-%d") if campaign.launched_at else None,
-                "campaign_name": campaign.name,
-                "channel": campaign.channel,
-                "sent": campaign.total_sent,
-                "delivered": campaign.total_delivered,
-                "read": campaign.total_read,
-                "clicked": campaign.total_clicked,
-                "delivery_rate": campaign.delivery_rate,
-                "open_rate": campaign.open_rate,
-            })
+            day_str = campaign.launched_at.strftime("%Y-%m-%d")
+            if day_str in daily_data:
+                daily_data[day_str]["sent"] += campaign.total_sent
+                daily_data[day_str]["delivered"] += campaign.total_delivered
+                daily_data[day_str]["read"] += campaign.total_read
+                daily_data[day_str]["clicked"] += campaign.total_clicked
 
+        trends = sorted(list(daily_data.values()), key=lambda x: x["date"])
         return trends
 
     @staticmethod
