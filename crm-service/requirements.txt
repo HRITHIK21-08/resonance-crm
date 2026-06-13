@@ -1,0 +1,32 @@
+# Core
+Flask==3.1.1
+gunicorn==23.0.0
+python-dotenv==1.1.0
+
+# Database
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.1.0
+psycopg2-binary==2.9.10
+SQLAlchemy==2.0.41
+
+# Validation & Serialization
+marshmallow==3.26.1
+marshmallow-sqlalchemy==1.4.2
+
+# CORS
+Flask-CORS==5.0.1
+
+# AI
+google-generativeai==0.8.5
+openai==1.82.0
+
+# HTTP Client (for channel service calls)
+requests==2.32.3
+httpx==0.28.1
+
+# Utilities
+uuid6==2024.7.10
+faker==37.1.0
+
+# Background tasks
+APScheduler==3.11.0

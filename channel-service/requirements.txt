@@ -1,0 +1,15 @@
+# Channel Service - Dependencies
+# Resonance AI-native Mini CRM - Message Delivery Simulator
+
+# Web framework
+Flask==3.1.1
+flask-cors==5.0.1
+
+# Production WSGI server
+gunicorn==23.0.0
+
+# HTTP client for callbacks to CRM
+requests==2.32.3
+
+# Environment variable management
+python-dotenv==1.1.0

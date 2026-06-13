@@ -1,0 +1,3 @@
+"""
+Resonance CRM — AI Package
+"""
