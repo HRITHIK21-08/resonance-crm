@@ -40,6 +40,16 @@ def create_app(config_name=None):
     from app.routes import api_bp
     app.register_blueprint(api_bp, url_prefix="/api")
 
+    # Base URL welcome endpoint
+    @app.route("/")
+    def root():
+        return {
+            "name": "Resonance CRM API Service",
+            "version": "1.0.0",
+            "status": "active",
+            "health_check": "/api/health"
+        }
+
     # Register global error handlers
     register_error_handlers(app)
 
