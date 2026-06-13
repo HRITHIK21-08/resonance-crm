@@ -43,13 +43,12 @@ def create_app(config_name=None):
     # Register global error handlers
     register_error_handlers(app)
 
-    # Create tables automatically in development mode for zero-setup execution
-    if config_name == "development":
-        with app.app_context():
-            try:
-                db.create_all()
-                app.logger.info("Database tables initialized successfully.")
-            except Exception as e:
-                app.logger.error(f"Failed to auto-create database tables: {e}")
+    # Create tables automatically for zero-setup execution
+    with app.app_context():
+        try:
+            db.create_all()
+            app.logger.info("Database tables initialized successfully.")
+        except Exception as e:
+            app.logger.error(f"Failed to auto-create database tables: {e}")
 
     return app
