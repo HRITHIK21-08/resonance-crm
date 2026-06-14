@@ -23,33 +23,36 @@ The project consists of three core services, designed to operate in high-fidelit
 
 ```mermaid
 graph TD
-    subgraph Frontend [Next.js Web Client]
-        UI[Interactive Dashboard]
-        CP[AI Copilot Console]
+    subgraph Frontend ["Next.js Web Client"]
+        UI["Interactive Dashboard"]
+        CP["AI Copilot Console"]
     end
 
-    subgraph CRM_Service [CRM Core Service (Port 5002)]
-        API[Flask API Gateway]
-        DB[(SQLite / PostgreSQL)]
-        Engine[Campaign Dispatch Engine]
-        Analytics[Analytics Processor]
-        Gemini[Gemini AI Engine]
+    subgraph CRM_Service ["CRM Core Service (Port 5002)"]
+        API["Flask API Gateway"]
+        DB[("SQLite / PostgreSQL")]
+        Engine["Campaign Dispatch Engine"]
+        Analytics["Analytics Processor"]
+        Gemini["Gemini AI Engine"]
     end
 
-    subgraph Channel_Service [Channel Service Simulator (Port 5001)]
-        Gateway[Express/Flask Delivery Gateway]
-        Sim[Daemon Simulation Threads]
+    subgraph Channel_Service ["Channel Service Simulator (Port 5001)"]
+        Gateway["Express/Flask Delivery Gateway"]
+        Sim["Daemon Simulation Threads"]
     end
 
     %% Interactions
-    UI <-->|HTTP / REST| API
-    CP <-->|Chat API| Gemini
+    UI -->|HTTP Request| API
+    API -->|JSON Response| UI
+    CP -->|Chat API Query| Gemini
+    Gemini -->|AI Response| CP
     Engine -->|HTTP Post Batch| Gateway
     Gateway -->|Enqueue Batch| Sim
     Sim -.->|Async Delivery Receipt Callbacks| API
-    API -->|Write Events / Update Denormalized Stats| DB
-    Analytics <-->|Aggregate Stats| DB
-    UI <-->|Render Graphs & Insights| Analytics
+    API -->|Write Events & Update Stats| DB
+    Analytics -->|Read & Aggregate Stats| DB
+    UI -->|Query Metrics| Analytics
+    Analytics -->|Render Graphs & Insights| UI
 ```
 
 ### Component Responsibilities
