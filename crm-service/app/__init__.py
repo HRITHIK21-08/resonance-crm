@@ -58,7 +58,14 @@ def create_app(config_name=None):
         try:
             db.create_all()
             app.logger.info("Database tables initialized successfully.")
+            
+            # Auto-seed if database is empty (no customers)
+            from app.models.customer import Customer
+            if Customer.query.count() == 0:
+                app.logger.info("Database empty, auto-seeding pre-built records...")
+                from app.routes import perform_seeding
+                perform_seeding(drop_tables=False)
         except Exception as e:
-            app.logger.error(f"Failed to auto-create database tables: {e}")
+            app.logger.error(f"Failed to auto-create database tables or seed: {e}")
 
     return app

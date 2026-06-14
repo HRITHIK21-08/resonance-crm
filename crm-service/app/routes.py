@@ -406,6 +406,453 @@ def get_analytics_insights():
 # ──────────────────────────────────────────────────────────────────────
 # High-fidelity Mock Ingestion Route
 # ──────────────────────────────────────────────────────────────────────
+def perform_seeding(drop_tables=True):
+    """
+    Worker function to reset/seed database. Can be called on startup or via API.
+    """
+    logger.info("Starting database seeding...")
+
+    # Reset database schemas safely
+    if drop_tables:
+        db.drop_all()
+        db.create_all()
+
+    fake = Faker('en_IN')  # Use Indian names/cities context
+    random.seed(42)  # Maintain deterministic splits for repeatable analytics
+
+    # ── 1. Create 1000 Customers ───────────────────────────────────
+    cities = ["Mumbai", "Delhi", "Bangalore", "Hyderabad", "Pune", "Kolkata", "Jaipur", "Chennai"]
+    channels = ["whatsapp", "email", "sms"]
+    genders = ["female", "male", "unspecified"]
+
+    customers = []
+    orders = []
+
+    logger.info("Generating 1000 shoppers...")
+    # Make a base registration calendar ranging over the past 365 days
+    for i in range(1000):
+        name = fake.name()
+        email = f"{name.lower().replace(' ', '.')}@example.com"
+        # Ensure unique emails
+        if any(c.email == email for c in customers):
+            email = f"{name.lower().replace(' ', '.')}.{i}@example.com"
+
+        # Create customer object
+        registration_days_ago = random.randint(10, 365)
+        created_at = datetime.now(timezone.utc) - timedelta(days=registration_days_ago)
+        
+        customer = Customer(
+            id=str(uuid.uuid4()),
+            email=email,
+            name=name,
+            phone=f"+91{random.randint(7000000000, 9999999999)}",
+            city=random.choice(cities),
+            gender=random.choice(genders),
+            birth_date=fake.date_of_birth(minimum_age=18, maximum_age=50),
+            preferred_channel=random.choice(channels),
+            metadata_={"source": random.choice(["instagram", "google", "organic", "referral"])},
+            created_at=created_at,
+            updated_at=created_at
+        )
+        customers.append(customer)
+
+    # ── 2. Create Orders for Customers (meaningful cohorts) ────────
+    logger.info("Generating order logs...")
+    categories = {
+        "Ethnic Wear": ["kurta", "saree", "lehenga", "anarkali"],
+        "Western Wear": ["dress", "jeans", "top", "jacket", "shirt"],
+        "Footwear": ["heels", "sneakers", "flats", "sandals"],
+        "Accessories": ["bag", "handbag", "jewelry", "necklace", "watch"],
+        "Beauty": ["lipstick", "lip balm", "moisturizer", "perfume"]
+    }
+
+    # Divide shoppers into purchase profiles
+    # - 10% VIP/Loyal (5-12 orders, LTV > 12k)
+    # - 20% Dormant (1-3 orders, last purchase > 70 days ago)
+    # - 15% New (0-1 order, registered recently < 30 days)
+    # - 55% Regular (1-4 orders)
+    for idx, customer in enumerate(customers):
+        orders_count = 0
+        order_profile = "regular"
+
+        if idx < 100:  # VIP
+            order_profile = "vip"
+            orders_count = random.randint(5, 12)
+        elif idx < 300:  # Dormant
+            order_profile = "dormant"
+            orders_count = random.randint(1, 3)
+        elif idx < 450:  # New
+            order_profile = "new"
+            # New shoppers registered recently, some haven't placed orders
+            orders_count = random.choice([0, 1])
+        else:
+            orders_count = random.randint(1, 4)
+
+        # Generate orders
+        customer_ltv = 0.0
+        last_order_date = None
+        first_order_date = None
+
+        for o_idx in range(orders_count):
+            # Calculate purchase timing
+            days_ago = 0
+            if order_profile == "dormant":
+                days_ago = random.randint(70, 200)
+            elif order_profile == "vip":
+                days_ago = random.randint(5, 180)
+            elif order_profile == "new":
+                days_ago = random.randint(1, 20)
+            else:
+                days_ago = random.randint(15, 150)
+
+            order_date = datetime.now(timezone.utc) - timedelta(days=days_ago)
+
+            # Keep track of first/last purchases
+            if not last_order_date or order_date > last_order_date:
+                last_order_date = order_date
+            if not first_order_date or order_date < first_order_date:
+                first_order_date = order_date
+
+            # Determine amount based on profile
+            category = random.choice(list(categories.keys()))
+            item_name = random.choice(categories[category])
+            
+            amount = 0.0
+            if order_profile == "vip":
+                amount = random.uniform(2500.0, 7500.0)
+            elif category in ["Ethnic Wear", "Footwear"]:
+                amount = random.uniform(1200.0, 4500.0)
+            else:
+                amount = random.uniform(499.0, 1800.0)
+            
+            amount = round(amount, 2)
+            customer_ltv += amount
+
+            order = Order(
+                id=str(uuid.uuid4()),
+                customer_id=customer.id,
+                order_number=f"ORD-{100000 + len(orders)}",
+                amount=amount,
+                status="completed",
+                category=category,
+                items=[{"name": item_name, "price": amount, "qty": 1}],
+                ordered_at=order_date,
+                created_at=order_date
+            )
+            orders.append(order)
+
+        # Update denormalized stats on customer model
+        customer.lifetime_value = round(customer_ltv, 2)
+        customer.total_orders = orders_count
+        customer.avg_order_value = round(customer_ltv / orders_count, 2) if orders_count > 0 else 0.0
+        customer.first_purchase_at = first_order_date
+        customer.last_purchase_at = last_order_date
+
+        # Assign preferred channel logically based on profile/LTV
+        if customer.lifetime_value > 10000:
+            customer.preferred_channel = "whatsapp"  # VIPs receive premium care
+        elif idx % 3 == 0:
+            customer.preferred_channel = "email"
+        elif idx % 3 == 1:
+            customer.preferred_channel = "sms"
+        else:
+            customer.preferred_channel = "whatsapp"
+
+    logger.info(f"Saving {len(customers)} customers and {len(orders)} order records...")
+    db.session.bulk_save_objects(customers)
+    db.session.bulk_save_objects(orders)
+    db.session.commit()
+
+    # ── 3. Populate default segments ───────────────────────────────
+    logger.info("Initializing core marketing audience segments...")
+    default_segments = [
+        {
+            "name": "Loyal Customers",
+            "description": "High-value returning shoppers (LTV >= ₹10K and 5+ orders)",
+            "rules": {
+                "logic": "AND",
+                "conditions": [
+                    {"field": "lifetime_value", "operator": "gte", "value": 10000},
+                    {"field": "total_orders", "operator": "gte", "value": 5}
+                ]
+            },
+            "segment_type": "manual"
+        },
+        {
+            "name": "Dormant Shoppers",
+            "description": "Registered shoppers inactive for 60+ days",
+            "rules": {
+                "logic": "AND",
+                "conditions": [
+                    {"field": "last_purchase_at", "operator": "days_ago_gt", "value": 60}
+                ]
+            },
+            "segment_type": "manual"
+        },
+        {
+            "name": "High-Value Spenders",
+            "description": "Highest spending premium shoppers (LTV >= ₹15K)",
+            "rules": {
+                "logic": "AND",
+                "conditions": [
+                    {"field": "lifetime_value", "operator": "gte", "value": 15000}
+                ]
+            },
+            "segment_type": "manual"
+        },
+        {
+            "name": "Bargain Hunters",
+            "description": "Shoppers with lower transaction averages (LTV between ₹1K-₹7.5K, AOV < ₹2.5K)",
+            "rules": {
+                "logic": "AND",
+                "conditions": [
+                    {"field": "lifetime_value", "operator": "between", "value": [1000, 7500]},
+                    {"field": "avg_order_value", "operator": "lt", "value": 2500}
+                ]
+            },
+            "segment_type": "manual"
+        },
+        {
+            "name": "New Enrollees",
+            "description": "Fresh shoppers with 1 or fewer orders",
+            "rules": {
+                "logic": "AND",
+                "conditions": [
+                    {"field": "total_orders", "operator": "lte", "value": 1}
+                ]
+            },
+            "segment_type": "manual"
+        }
+    ]
+
+    created_segments = {}
+    for seg_data in default_segments:
+        segment = Segment(
+            id=str(uuid.uuid4()),
+            name=seg_data["name"],
+            description=seg_data["description"],
+            rules=seg_data["rules"],
+            segment_type=seg_data["segment_type"],
+            created_at=datetime.now(timezone.utc) - timedelta(days=45),
+            refreshed_at=datetime.now(timezone.utc)
+        )
+        db.session.add(segment)
+        db.session.flush()
+        
+        # Populate segment memberships
+        count = SegmentService._evaluate_and_populate(segment)
+        segment.customer_count = count
+        created_segments[segment.name] = segment
+
+    db.session.commit()
+    logger.info("Segments populated successfully.")
+
+    # ── 4. Create Historical Campaigns with detailed Funnel events ──
+    logger.info("Simulating historical campaign delivery funnels...")
+    
+    # We simulate 3 historical campaigns
+    hist_campaigns = [
+        {
+            "name": "Holi Festive Launch",
+            "segment_name": "Loyal Customers",
+            "channel": "whatsapp",
+            "template": "Hey {{first_name}}! 🌸 Celebrate Holi with 20% off our gorgeous Ethnic Wear collection! Use code FESTIVE20. luxethreads.com/holi",
+            "days_ago": 30,
+            "funnel": {"delivered": 0.96, "read": 0.82, "clicked": 0.28, "converted": 0.08}
+        },
+        {
+            "name": "Winter Dormancy Recovery",
+            "segment_name": "Dormant Shoppers",
+            "channel": "sms",
+            "template": "Hi {{first_name}}! We miss you at LUXE THREADS. Come back and take 20% off your next purchase using code MISSYOU. Shop: luxethreads.com/winback",
+            "days_ago": 18,
+            "funnel": {"delivered": 0.92, "read": 0.90, "clicked": 0.09, "converted": 0.02}
+        },
+        {
+            "name": "VIP Summer Collection Sneak-Peek",
+            "segment_name": "High-Value Spenders",
+            "channel": "email",
+            "subject": "Exclusive: VIP Summer Collection Sneak-Peek ☀️",
+            "template": "Hello {{first_name}},\n\nAs one of our VIP customers, we are thrilled to give you exclusive early access to our Summer Collection.\n\nEnjoy complimentary shipping on all orders this weekend.\n\nExplore: luxethreads.com/vip-summer",
+            "days_ago": 8,
+            "funnel": {"delivered": 0.99, "read": 0.24, "clicked": 0.04, "converted": 0.01}
+        }
+    ]
+
+    for hc in hist_campaigns:
+        seg = created_segments[hc["segment_name"]]
+        
+        # Fetch segment members
+        members = (
+            db.session.query(Customer)
+            .join(SegmentMembership, SegmentMembership.customer_id == Customer.id)
+            .filter(SegmentMembership.segment_id == seg.id)
+            .all()
+        )
+
+        # Limit campaign size to keep seeding fast (max 200 per campaign)
+        sample_members = random.sample(members, min(len(members), 200))
+        campaign_created_at = datetime.now(timezone.utc) - timedelta(days=hc["days_ago"])
+        
+        # Resolve brand_id based on seeded campaign name
+        name_lower = hc["name"].lower()
+        resolved_brand_id = "aura-fashion"
+        if "aura" in name_lower or "festive" in name_lower or "ethnic" in name_lower:
+            resolved_brand_id = "aura-fashion"
+        elif "brew" in name_lower or "espresso" in name_lower or "roast" in name_lower or "dormancy" in name_lower:
+            resolved_brand_id = "brew-co"
+        elif "bloom" in name_lower or "hydration" in name_lower or "skincare" in name_lower or "sneak-peek" in name_lower:
+            resolved_brand_id = "bloom-beauty"
+
+        campaign = Campaign(
+            id=str(uuid.uuid4()),
+            name=hc["name"],
+            description=f"Seeded campaign targeting {hc['segment_name']} via {hc['channel']}",
+            segment_id=seg.id,
+            channel=hc["channel"],
+            status="completed",
+            message_template=hc["template"],
+            subject_line=hc.get("subject"),
+            ai_metadata={"brand_id": resolved_brand_id},
+            launched_at=campaign_created_at,
+            completed_at=campaign_created_at + timedelta(hours=6),
+            created_at=campaign_created_at - timedelta(days=2)
+        )
+        db.session.add(campaign)
+        db.session.flush()
+
+        # Counters for Campaign
+        total_sent = len(sample_members)
+        total_delivered = 0
+        total_failed = 0
+        total_read = 0
+        total_clicked = 0
+        total_converted = 0
+
+        # Generate Messages and Delivery Events
+        for customer in sample_members:
+            msg_id = str(uuid.uuid4())
+            ext_id = str(uuid.uuid4())
+            content = CampaignService._personalize_message(hc["template"], customer)
+
+            # Determine final status for this customer based on funnel probabilities
+            r = random.random()
+            final_status = "sent"
+            
+            # Check outcome splits
+            if r <= hc["funnel"]["converted"]:
+                final_status = "converted"
+            elif r <= hc["funnel"]["clicked"]:
+                final_status = "clicked"
+            elif r <= hc["funnel"]["read"]:
+                final_status = "read"
+            elif r <= hc["funnel"]["delivered"]:
+                final_status = "delivered"
+            else:
+                final_status = "failed"
+
+            msg = Message(
+                id=msg_id,
+                campaign_id=campaign.id,
+                customer_id=customer.id,
+                channel=hc["channel"],
+                content=content,
+                subject_line=hc.get("subject"),
+                status=final_status,
+                external_id=ext_id,
+                created_at=campaign_created_at
+            )
+            db.session.add(msg)
+            db.session.flush()
+
+            # Generate event timeline for this message
+            events = []
+            seq = 1
+            occurred = campaign_created_at + timedelta(seconds=random.randint(5, 60))
+            
+            # SENT
+            msg.sent_at = occurred
+            events.append(DeliveryEvent(
+                id=str(uuid.uuid4()), message_id=msg_id, event_type="SENT",
+                idempotency_key=hashlib.sha256(f"{msg_id}-SENT-{seq}".encode()).hexdigest(),
+                sequence=seq, occurred_at=occurred
+            ))
+            
+            if final_status == "failed":
+                total_failed += 1
+                seq += 1
+                occurred += timedelta(seconds=random.randint(5, 30))
+                msg.failed_at = occurred
+                msg.failure_reason = "Undelivered device endpoint"
+                events.append(DeliveryEvent(
+                    id=str(uuid.uuid4()), message_id=msg_id, event_type="FAILED",
+                    idempotency_key=hashlib.sha256(f"{msg_id}-FAILED-{seq}".encode()).hexdigest(),
+                    sequence=seq, occurred_at=occurred, metadata_={"failure_reason": "Undelivered device endpoint"}
+                ))
+            else:
+                # DELIVERED
+                total_delivered += 1
+                seq += 1
+                occurred += timedelta(minutes=random.randint(1, 10))
+                msg.delivered_at = occurred
+                events.append(DeliveryEvent(
+                    id=str(uuid.uuid4()), message_id=msg_id, event_type="DELIVERED",
+                    idempotency_key=hashlib.sha256(f"{msg_id}-DELIVERED-{seq}".encode()).hexdigest(),
+                    sequence=seq, occurred_at=occurred
+                ))
+
+                if final_status in ["read", "clicked", "converted"]:
+                    # READ
+                    total_read += 1
+                    seq += 1
+                    occurred += timedelta(minutes=random.randint(5, 45))
+                    msg.read_at = occurred
+                    events.append(DeliveryEvent(
+                        id=str(uuid.uuid4()), message_id=msg_id, event_type="READ",
+                        idempotency_key=hashlib.sha256(f"{msg_id}-READ-{seq}".encode()).hexdigest(),
+                        sequence=seq, occurred_at=occurred
+                    ))
+
+                    if final_status in ["clicked", "converted"]:
+                        # CLICKED
+                        total_clicked += 1
+                        seq += 1
+                        occurred += timedelta(minutes=random.randint(2, 20))
+                        msg.clicked_at = occurred
+                        events.append(DeliveryEvent(
+                            id=str(uuid.uuid4()), message_id=msg_id, event_type="CLICKED",
+                            idempotency_key=hashlib.sha256(f"{msg_id}-CLICKED-{seq}".encode()).hexdigest(),
+                            sequence=seq, occurred_at=occurred
+                        ))
+
+                        if final_status == "converted":
+                            # CONVERTED
+                            total_converted += 1
+                            seq += 1
+                            occurred += timedelta(minutes=random.randint(5, 60))
+                            msg.converted_at = occurred
+                            events.append(DeliveryEvent(
+                                id=str(uuid.uuid4()), message_id=msg_id, event_type="CONVERTED",
+                                idempotency_key=hashlib.sha256(f"{msg_id}-CONVERTED-{seq}".encode()).hexdigest(),
+                                sequence=seq, occurred_at=occurred
+                            ))
+
+            # Save events bulk
+            for e in events:
+                db.session.add(e)
+
+        # Update denormalized stats
+        campaign.total_sent = total_sent
+        campaign.total_delivered = total_delivered
+        campaign.total_failed = total_failed
+        campaign.total_read = total_read
+        campaign.total_clicked = total_clicked
+        campaign.total_converted = total_converted
+
+    db.session.commit()
+    logger.info("Historical campaigns successfully loaded!")
+
+
 @api_bp.route("/customers/mock", methods=["POST"])
 def seed_mock_data():
     """
@@ -414,451 +861,11 @@ def seed_mock_data():
     simulates historical campaign delivery funnels.
     """
     try:
-        logger.info("Starting database seeding...")
-
-        # Reset database schemas safely
-        db.drop_all()
-        db.create_all()
-
-        fake = Faker('en_IN')  # Use Indian names/cities context
-        random.seed(42)  # Maintain deterministic splits for repeatable analytics
-
-        # ── 1. Create 1000 Customers ───────────────────────────────────
-        cities = ["Mumbai", "Delhi", "Bangalore", "Hyderabad", "Pune", "Kolkata", "Jaipur", "Chennai"]
-        channels = ["whatsapp", "email", "sms"]
-        genders = ["female", "male", "unspecified"]
-
-        customers = []
-        orders = []
-
-        logger.info("Generating 1000 shoppers...")
-        # Make a base registration calendar ranging over the past 365 days
-        for i in range(1000):
-            name = fake.name()
-            email = f"{name.lower().replace(' ', '.')}@example.com"
-            # Ensure unique emails
-            if any(c.email == email for c in customers):
-                email = f"{name.lower().replace(' ', '.')}.{i}@example.com"
-
-            # Create customer object
-            registration_days_ago = random.randint(10, 365)
-            created_at = datetime.now(timezone.utc) - timedelta(days=registration_days_ago)
-            
-            customer = Customer(
-                id=str(uuid.uuid4()),
-                email=email,
-                name=name,
-                phone=f"+91{random.randint(7000000000, 9999999999)}",
-                city=random.choice(cities),
-                gender=random.choice(genders),
-                birth_date=fake.date_of_birth(minimum_age=18, maximum_age=50),
-                preferred_channel=random.choice(channels),
-                metadata_={"source": random.choice(["instagram", "google", "organic", "referral"])},
-                created_at=created_at,
-                updated_at=created_at
-            )
-            customers.append(customer)
-
-        # ── 2. Create Orders for Customers (meaningful cohorts) ────────
-        logger.info("Generating order logs...")
-        categories = {
-            "Ethnic Wear": ["kurta", "saree", "lehenga", "anarkali"],
-            "Western Wear": ["dress", "jeans", "top", "jacket", "shirt"],
-            "Footwear": ["heels", "sneakers", "flats", "sandals"],
-            "Accessories": ["bag", "handbag", "jewelry", "necklace", "watch"],
-            "Beauty": ["lipstick", "lip balm", "moisturizer", "perfume"]
-        }
-
-        # Divide shoppers into purchase profiles
-        # - 10% VIP/Loyal (5-12 orders, LTV > 12k)
-        # - 20% Dormant (1-3 orders, last purchase > 70 days ago)
-        # - 15% New (0-1 order, registered recently < 30 days)
-        # - 55% Regular (1-4 orders)
-        for idx, customer in enumerate(customers):
-            orders_count = 0
-            order_profile = "regular"
-
-            if idx < 100:  # VIP
-                order_profile = "vip"
-                orders_count = random.randint(5, 12)
-            elif idx < 300:  # Dormant
-                order_profile = "dormant"
-                orders_count = random.randint(1, 3)
-            elif idx < 450:  # New
-                order_profile = "new"
-                # New shoppers registered recently, some haven't placed orders
-                orders_count = random.choice([0, 1])
-            else:
-                orders_count = random.randint(1, 4)
-
-            # Generate orders
-            customer_ltv = 0.0
-            last_order_date = None
-            first_order_date = None
-
-            for o_idx in range(orders_count):
-                # Calculate purchase timing
-                days_ago = 0
-                if order_profile == "dormant":
-                    days_ago = random.randint(70, 200)
-                elif order_profile == "vip":
-                    days_ago = random.randint(5, 180)
-                elif order_profile == "new":
-                    days_ago = random.randint(1, 20)
-                else:
-                    days_ago = random.randint(15, 150)
-
-                order_date = datetime.now(timezone.utc) - timedelta(days=days_ago)
-
-                # Keep track of first/last purchases
-                if not last_order_date or order_date > last_order_date:
-                    last_order_date = order_date
-                if not first_order_date or order_date < first_order_date:
-                    first_order_date = order_date
-
-                # Determine amount based on profile
-                category = random.choice(list(categories.keys()))
-                item_name = random.choice(categories[category])
-                
-                amount = 0.0
-                if order_profile == "vip":
-                    amount = random.uniform(2500.0, 7500.0)
-                elif category in ["Ethnic Wear", "Footwear"]:
-                    amount = random.uniform(1200.0, 4500.0)
-                else:
-                    amount = random.uniform(499.0, 1800.0)
-                
-                amount = round(amount, 2)
-                customer_ltv += amount
-
-                order = Order(
-                    id=str(uuid.uuid4()),
-                    customer_id=customer.id,
-                    order_number=f"ORD-{100000 + len(orders)}",
-                    amount=amount,
-                    status="completed",
-                    category=category,
-                    items=[{"name": item_name, "price": amount, "qty": 1}],
-                    ordered_at=order_date,
-                    created_at=order_date
-                )
-                orders.append(order)
-
-            # Update denormalized stats on customer model
-            customer.lifetime_value = round(customer_ltv, 2)
-            customer.total_orders = orders_count
-            customer.avg_order_value = round(customer_ltv / orders_count, 2) if orders_count > 0 else 0.0
-            customer.first_purchase_at = first_order_date
-            customer.last_purchase_at = last_order_date
-
-            # Assign preferred channel logically based on profile/LTV
-            if customer.lifetime_value > 10000:
-                customer.preferred_channel = "whatsapp"  # VIPs receive premium care
-            elif idx % 3 == 0:
-                customer.preferred_channel = "email"
-            elif idx % 3 == 1:
-                customer.preferred_channel = "sms"
-            else:
-                customer.preferred_channel = "whatsapp"
-
-        logger.info(f"Saving {len(customers)} customers and {len(orders)} order records...")
-        db.session.bulk_save_objects(customers)
-        db.session.bulk_save_objects(orders)
-        db.session.commit()
-
-        # ── 3. Populate default segments ───────────────────────────────
-        logger.info("Initializing core marketing audience segments...")
-        default_segments = [
-            {
-                "name": "Loyal Customers",
-                "description": "High-value returning shoppers (LTV >= ₹10K and 5+ orders)",
-                "rules": {
-                    "logic": "AND",
-                    "conditions": [
-                        {"field": "lifetime_value", "operator": "gte", "value": 10000},
-                        {"field": "total_orders", "operator": "gte", "value": 5}
-                    ]
-                },
-                "segment_type": "manual"
-            },
-            {
-                "name": "Dormant Shoppers",
-                "description": "Registered shoppers inactive for 60+ days",
-                "rules": {
-                    "logic": "AND",
-                    "conditions": [
-                        {"field": "last_purchase_at", "operator": "days_ago_gt", "value": 60}
-                    ]
-                },
-                "segment_type": "manual"
-            },
-            {
-                "name": "High-Value Spenders",
-                "description": "Highest spending premium shoppers (LTV >= ₹15K)",
-                "rules": {
-                    "logic": "AND",
-                    "conditions": [
-                        {"field": "lifetime_value", "operator": "gte", "value": 15000}
-                    ]
-                },
-                "segment_type": "manual"
-            },
-            {
-                "name": "Bargain Hunters",
-                "description": "Shoppers with lower transaction averages (LTV between ₹1K-₹7.5K, AOV < ₹2.5K)",
-                "rules": {
-                    "logic": "AND",
-                    "conditions": [
-                        {"field": "lifetime_value", "operator": "between", "value": [1000, 7500]},
-                        {"field": "avg_order_value", "operator": "lt", "value": 2500}
-                    ]
-                },
-                "segment_type": "manual"
-            },
-            {
-                "name": "New Enrollees",
-                "description": "Fresh shoppers with 1 or fewer orders",
-                "rules": {
-                    "logic": "AND",
-                    "conditions": [
-                        {"field": "total_orders", "operator": "lte", "value": 1}
-                    ]
-                },
-                "segment_type": "manual"
-            }
-        ]
-
-        created_segments = {}
-        for seg_data in default_segments:
-            segment = Segment(
-                id=str(uuid.uuid4()),
-                name=seg_data["name"],
-                description=seg_data["description"],
-                rules=seg_data["rules"],
-                segment_type=seg_data["segment_type"],
-                created_at=datetime.now(timezone.utc) - timedelta(days=45),
-                refreshed_at=datetime.now(timezone.utc)
-            )
-            db.session.add(segment)
-            db.session.flush()
-            
-            # Populate segment memberships
-            count = SegmentService._evaluate_and_populate(segment)
-            segment.customer_count = count
-            created_segments[segment.name] = segment
-
-        db.session.commit()
-        logger.info("Segments populated successfully.")
-
-        # ── 4. Create Historical Campaigns with detailed Funnel events ──
-        logger.info("Simulating historical campaign delivery funnels...")
-        
-        # We simulate 3 historical campaigns
-        hist_campaigns = [
-            {
-                "name": "Holi Festive Launch",
-                "segment_name": "Loyal Customers",
-                "channel": "whatsapp",
-                "template": "Hey {{first_name}}! 🌸 Celebrate Holi with 20% off our gorgeous Ethnic Wear collection! Use code FESTIVE20. luxethreads.com/holi",
-                "days_ago": 30,
-                "funnel": {"delivered": 0.96, "read": 0.82, "clicked": 0.28, "converted": 0.08}
-            },
-            {
-                "name": "Winter Dormancy Recovery",
-                "segment_name": "Dormant Shoppers",
-                "channel": "sms",
-                "template": "Hi {{first_name}}! We miss you at LUXE THREADS. Come back and take 20% off your next purchase using code MISSYOU. Shop: luxethreads.com/winback",
-                "days_ago": 18,
-                "funnel": {"delivered": 0.92, "read": 0.90, "clicked": 0.09, "converted": 0.02}
-            },
-            {
-                "name": "VIP Summer Collection Sneak-Peek",
-                "segment_name": "High-Value Spenders",
-                "channel": "email",
-                "subject": "Exclusive: VIP Summer Collection Sneak-Peek ☀️",
-                "template": "Hello {{first_name}},\n\nAs one of our VIP customers, we are thrilled to give you exclusive early access to our Summer Collection.\n\nEnjoy complimentary shipping on all orders this weekend.\n\nExplore: luxethreads.com/vip-summer",
-                "days_ago": 8,
-                "funnel": {"delivered": 0.99, "read": 0.24, "clicked": 0.04, "converted": 0.01}
-            }
-        ]
-
-        for hc in hist_campaigns:
-            seg = created_segments[hc["segment_name"]]
-            
-            # Fetch segment members
-            members = (
-                db.session.query(Customer)
-                .join(SegmentMembership, SegmentMembership.customer_id == Customer.id)
-                .filter(SegmentMembership.segment_id == seg.id)
-                .all()
-            )
-
-            # Limit campaign size to keep seeding fast (max 200 per campaign)
-            sample_members = random.sample(members, min(len(members), 200))
-            campaign_created_at = datetime.now(timezone.utc) - timedelta(days=hc["days_ago"])
-            
-            # Resolve brand_id based on seeded campaign name
-            name_lower = hc["name"].lower()
-            resolved_brand_id = "aura-fashion"
-            if "aura" in name_lower or "festive" in name_lower or "ethnic" in name_lower:
-                resolved_brand_id = "aura-fashion"
-            elif "brew" in name_lower or "espresso" in name_lower or "roast" in name_lower or "dormancy" in name_lower:
-                resolved_brand_id = "brew-co"
-            elif "bloom" in name_lower or "hydration" in name_lower or "skincare" in name_lower or "sneak-peek" in name_lower:
-                resolved_brand_id = "bloom-beauty"
-
-            campaign = Campaign(
-                id=str(uuid.uuid4()),
-                name=hc["name"],
-                description=f"Seeded campaign targeting {hc['segment_name']} via {hc['channel']}",
-                segment_id=seg.id,
-                channel=hc["channel"],
-                status="completed",
-                message_template=hc["template"],
-                subject_line=hc.get("subject"),
-                ai_metadata={"brand_id": resolved_brand_id},
-                launched_at=campaign_created_at,
-                completed_at=campaign_created_at + timedelta(hours=6),
-                created_at=campaign_created_at - timedelta(days=2)
-            )
-            db.session.add(campaign)
-            db.session.flush()
-
-            # Counters for Campaign
-            total_sent = len(sample_members)
-            total_delivered = 0
-            total_failed = 0
-            total_read = 0
-            total_clicked = 0
-            total_converted = 0
-
-            # Generate Messages and Delivery Events
-            for customer in sample_members:
-                msg_id = str(uuid.uuid4())
-                ext_id = str(uuid.uuid4())
-                content = CampaignService._personalize_message(hc["template"], customer)
-
-                # Determine final status for this customer based on funnel probabilities
-                r = random.random()
-                final_status = "sent"
-                
-                # Check outcome splits
-                if r <= hc["funnel"]["converted"]:
-                    final_status = "converted"
-                elif r <= hc["funnel"]["clicked"]:
-                    final_status = "clicked"
-                elif r <= hc["funnel"]["read"]:
-                    final_status = "read"
-                elif r <= hc["funnel"]["delivered"]:
-                    final_status = "delivered"
-                else:
-                    final_status = "failed"
-
-                msg = Message(
-                    id=msg_id,
-                    campaign_id=campaign.id,
-                    customer_id=customer.id,
-                    channel=hc["channel"],
-                    content=content,
-                    subject_line=hc.get("subject"),
-                    status=final_status,
-                    external_id=ext_id,
-                    created_at=campaign_created_at
-                )
-                db.session.add(msg)
-                db.session.flush()
-
-                # Generate event timeline for this message
-                events = []
-                seq = 1
-                occurred = campaign_created_at + timedelta(seconds=random.randint(5, 60))
-                
-                # SENT
-                msg.sent_at = occurred
-                events.append(DeliveryEvent(
-                    id=str(uuid.uuid4()), message_id=msg_id, event_type="SENT",
-                    idempotency_key=hashlib.sha256(f"{msg_id}-SENT-{seq}".encode()).hexdigest(),
-                    sequence=seq, occurred_at=occurred
-                ))
-                
-                if final_status == "failed":
-                    total_failed += 1
-                    seq += 1
-                    occurred += timedelta(seconds=random.randint(5, 30))
-                    msg.failed_at = occurred
-                    msg.failure_reason = "Undelivered device endpoint"
-                    events.append(DeliveryEvent(
-                        id=str(uuid.uuid4()), message_id=msg_id, event_type="FAILED",
-                        idempotency_key=hashlib.sha256(f"{msg_id}-FAILED-{seq}".encode()).hexdigest(),
-                        sequence=seq, occurred_at=occurred, metadata_={"failure_reason": "Undelivered device endpoint"}
-                    ))
-                else:
-                    # DELIVERED
-                    total_delivered += 1
-                    seq += 1
-                    occurred += timedelta(minutes=random.randint(1, 10))
-                    msg.delivered_at = occurred
-                    events.append(DeliveryEvent(
-                        id=str(uuid.uuid4()), message_id=msg_id, event_type="DELIVERED",
-                        idempotency_key=hashlib.sha256(f"{msg_id}-DELIVERED-{seq}".encode()).hexdigest(),
-                        sequence=seq, occurred_at=occurred
-                    ))
-
-                    if final_status in ["read", "clicked", "converted"]:
-                        # READ
-                        total_read += 1
-                        seq += 1
-                        occurred += timedelta(minutes=random.randint(5, 45))
-                        msg.read_at = occurred
-                        events.append(DeliveryEvent(
-                            id=str(uuid.uuid4()), message_id=msg_id, event_type="READ",
-                            idempotency_key=hashlib.sha256(f"{msg_id}-READ-{seq}".encode()).hexdigest(),
-                            sequence=seq, occurred_at=occurred
-                        ))
-
-                        if final_status in ["clicked", "converted"]:
-                            # CLICKED
-                            total_clicked += 1
-                            seq += 1
-                            occurred += timedelta(minutes=random.randint(2, 20))
-                            msg.clicked_at = occurred
-                            events.append(DeliveryEvent(
-                                id=str(uuid.uuid4()), message_id=msg_id, event_type="CLICKED",
-                                idempotency_key=hashlib.sha256(f"{msg_id}-CLICKED-{seq}".encode()).hexdigest(),
-                                sequence=seq, occurred_at=occurred
-                            ))
-
-                            if final_status == "converted":
-                                # CONVERTED
-                                total_converted += 1
-                                seq += 1
-                                occurred += timedelta(minutes=random.randint(5, 60))
-                                msg.converted_at = occurred
-                                events.append(DeliveryEvent(
-                                    id=str(uuid.uuid4()), message_id=msg_id, event_type="CONVERTED",
-                                    idempotency_key=hashlib.sha256(f"{msg_id}-CONVERTED-{seq}".encode()).hexdigest(),
-                                    sequence=seq, occurred_at=occurred
-                                ))
-
-                # Save events bulk
-                for e in events:
-                    db.session.add(e)
-
-            # Update denormalized stats
-            campaign.total_sent = total_sent
-            campaign.total_delivered = total_delivered
-            campaign.total_failed = total_failed
-            campaign.total_read = total_read
-            campaign.total_clicked = total_clicked
-            campaign.total_converted = total_converted
-
-        db.session.commit()
-        logger.info("Historical campaigns successfully loaded!")
+        perform_seeding(drop_tables=True)
         return jsonify({
             "status": "success",
             "message": "Database successfully reset and seeded with 1000 shoppers, orders, default segments, and campaigns."
         }), 200
-
     except Exception as e:
         db.session.rollback()
         logger.exception(f"Seeding process crashed: {e}")
