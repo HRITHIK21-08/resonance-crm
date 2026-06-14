@@ -347,8 +347,15 @@ class CampaignService:
                 with app_context:
                     from app.services.message_service import MessageService
                     
-                    # 1. DELIVERED (95% chance)
+                    # 1. DELIVERED (95% chance) or FAILED (5% chance)
                     delivered_ids = []
+                    failure_reasons = [
+                        "Undelivered device endpoint",
+                        "Invalid recipient format",
+                        "Carrier route block",
+                        "Spam filter restriction",
+                        "Network timeout"
+                    ]
                     for msg_id in msg_ids:
                         if random.random() <= 0.95:
                             delivered_ids.append(msg_id)
@@ -365,6 +372,21 @@ class CampaignService:
                                 time.sleep(0.01)
                             except Exception as e:
                                 logger.error(f"Simulation delivered error for msg {msg_id}: {e}")
+                        else:
+                            failed_key = hashlib.sha256(f"{msg_id}-failed".encode()).hexdigest()
+                            reason = random.choice(failure_reasons)
+                            try:
+                                MessageService.process_delivery_callback({
+                                    "message_id": msg_id,
+                                    "event_type": "FAILED",
+                                    "idempotency_key": failed_key,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "sequence": 1,
+                                    "metadata": {"failure_reason": reason}
+                                })
+                                time.sleep(0.01)
+                            except Exception as e:
+                                logger.error(f"Simulation failure error for msg {msg_id}: {e}")
 
                     # 2. READ (75% chance of delivered)
                     read_ids = []
